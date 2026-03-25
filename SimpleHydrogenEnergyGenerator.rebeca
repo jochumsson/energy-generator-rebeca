@@ -1,0 +1,238 @@
+env int EC_CONTROL_LOOP_PERIOD = 1;
+
+env int FC_CONTROL_LOOP_PERIOD = 1;
+env int FC_PR_INACTIVE = 0;
+env int FC_PR_LOW = 1;
+env int FC_PR_MEDIUM = 2;
+env int FC_PR_HIGH = 3;
+
+env int BMS_CONTROL_LOOP_PERIOD = 1;
+env int BMS_SOC_UNKNOWN = -1;
+env int BMS_SOC_EMPTY = 0;
+env int BMS_SOC_CRITICAL_LOW = 1;
+env int BMS_SOC_LOW = 3;
+env int BMS_SOC_MEDIUM = 5;
+env int BMS_SOC_HIGH = 8;
+env int BMS_SOC_FULL = 10;
+
+env int BMS_CHARGE = 1;
+env int BMS_OP_LEVEL_INACTIVE = 0;
+env int BMS_DISCHARGE = -1;
+
+env int INVERTER_CONTROL_LOOP_PERIOD = 1;
+env int INVERTER_AC_LOAD_INACTIVE = 0;
+env int INVERTER_AC_LOAD_LOW = 1;
+env int INVERTER_AC_LOAD_MEDIUM = 2;
+env int INVERTER_AC_LOAD_HIGH = 3;
+
+env int AC_LOAD_CONTROL_LOOP_PERIOD = 1;
+
+reactiveclass EnergyController(10) {
+    knownrebecs {
+        FuelCell fuelCell;
+    }
+
+    statevars {
+        int observedSOC;
+    }
+
+    EnergyController() {
+        observedSOC = BMS_SOC_UNKNOWN;
+        self.controlLoop();
+    }
+
+    msgsrv controlLoop() {
+        regulateProduction();
+        self.controlLoop() after(EC_CONTROL_LOOP_PERIOD);
+    }
+
+    msgsrv receiveSOC(int currentSOC) {
+        observedSOC = currentSOC;
+    }
+
+    void regulateProduction() {
+        int requestedProductionRate;
+
+        /* Regulate the production rate of the fuel cell with respect to:
+           - the current status of the battery
+           
+           Fuel Cell lecel:
+           - FC_PR_INACTIVE = 0;
+		   - FC_PR_LOW = 1;
+           - FC_PR_MEDIUM = 2;
+           - FC_PR_HIGH = 3;
+           
+           Battary State:
+           - BMS_SOC_UNKNOWN = -1;
+		   - BMS_SOC_EMPTY = 0;
+		   - BMS_SOC_CRITICAL_LOW = 1;
+		   - BMS_SOC_LOW = 3;
+		   - BMS_SOC_MEDIUM = 5;
+		   - BMS_SOC_HIGH = 8;
+		   - BMS_SOC_FULL = 10;
+        */
+        if (observedSOC == BMS_SOC_UNKNOWN) {
+		    requestedProductionRate = FC_PR_INACTIVE;
+		} else if (observedSOC <= BMS_SOC_LOW) {
+		    requestedProductionRate = FC_PR_HIGH;
+		} else if (observedSOC <= BMS_SOC_MEDIUM) {
+		    requestedProductionRate = FC_PR_HIGH;
+		} else if (observedSOC < BMS_SOC_HIGH) {
+		    requestedProductionRate = FC_PR_MEDIUM;
+		} else {
+		    requestedProductionRate = FC_PR_LOW;
+		}
+
+        fuelCell.requestProductionRate(requestedProductionRate);
+    }
+}
+
+reactiveclass FuelCell(10) {
+    knownrebecs {
+        Inverter inv;
+    }
+
+    statevars {
+        int productionRate;
+    }
+
+    FuelCell() {
+        productionRate = FC_PR_INACTIVE;
+        self.controlLoop();
+    }
+
+    msgsrv controlLoop() {
+        inv.setPVPower(productionRate);
+        self.controlLoop() after(FC_CONTROL_LOOP_PERIOD);
+    }
+
+    msgsrv requestProductionRate(int newProductionRate) {
+        if (newProductionRate < FC_PR_INACTIVE) {
+            productionRate = FC_PR_INACTIVE;
+        } else if (newProductionRate > FC_PR_HIGH) {
+            productionRate = FC_PR_HIGH;
+        } else {
+            productionRate = newProductionRate;
+        }
+    }
+}
+
+reactiveclass BMS(10) {
+    knownrebecs {
+        EnergyController controller;
+    }
+
+    statevars {
+        int soc;
+        int operationLevel;
+    }
+
+    BMS() {
+        soc = BMS_SOC_MEDIUM; /* For now fixed, make random */
+        operationLevel = BMS_OP_LEVEL_INACTIVE;
+        self.controlLoop();
+    }
+
+    msgsrv controlLoop() {
+        calculateSOC();
+        controller.receiveSOC(soc);
+        self.controlLoop() after(BMS_CONTROL_LOOP_PERIOD);
+    }
+
+    msgsrv requestOperation(int newOperationLevel) {
+        if (newOperationLevel > BMS_OP_LEVEL_INACTIVE) {
+            operationLevel = BMS_CHARGE;
+        } else if (newOperationLevel < BMS_OP_LEVEL_INACTIVE) {
+            operationLevel = BMS_DISCHARGE;
+        } else {
+            operationLevel = BMS_OP_LEVEL_INACTIVE;
+        }
+    }
+
+    void calculateSOC() {
+        int newSOC = soc;
+
+        if (operationLevel == BMS_CHARGE) {
+            newSOC = soc + 1;
+        } else if (operationLevel == BMS_DISCHARGE) {
+            newSOC = soc - 1;
+        } else {
+            /* Intentionally left blank */
+        }
+
+        if (newSOC > BMS_SOC_HIGH) {
+            soc = BMS_SOC_HIGH;
+        } else if (newSOC < BMS_SOC_LOW) {
+            soc = BMS_SOC_LOW;
+        } else {
+            soc = newSOC;
+        }
+    }
+}
+
+reactiveclass Inverter(10) {
+    knownrebecs {
+        BMS bms;
+    }
+
+    statevars {
+        int acLoad;
+        int pvPower;
+    }
+
+    Inverter() {
+        acLoad = INVERTER_AC_LOAD_LOW; /* Static load for now */
+        pvPower = FC_PR_INACTIVE;
+        self.controlLoop();
+    }
+
+    msgsrv controlLoop() {
+        int batteryRequest = pvPower - acLoad;
+        bms.requestOperation(batteryRequest);
+        self.controlLoop() after(INVERTER_CONTROL_LOOP_PERIOD);
+    }
+
+    msgsrv setACLoad(int load) {
+        acLoad = load;
+    }
+    
+    msgsrv setPVPower(int power) {
+        pvPower = power;
+    }
+}
+
+reactiveclass ACLoad(10) {
+    knownrebecs {
+        Inverter inv;
+    }
+
+    statevars {
+    	int acLoad;
+    }
+
+    ACLoad() {
+    	acLoad = INVERTER_AC_LOAD_INACTIVE;
+        self.controlLoop();
+    }
+
+    msgsrv controlLoop() {
+	    /* Generate random load:
+	       0 = INVERTER_AC_LOAD_INACTIVE
+		   1 = INVERTER_AC_LOAD_LOW
+		   2 = INVERTER_AC_LOAD_MEDIUM
+           3 = INVERTER_AC_LOAD_HIGH */
+        acLoad = acLoad = ?(0, 1, 2, 3);
+        
+        inv.setACLoad(acLoad);
+        self.controlLoop() after(AC_LOAD_CONTROL_LOOP_PERIOD);
+    }
+}
+
+
+main {
+    EnergyController controller(fuelCell):();
+    FuelCell fuelCell(inv):();
+    Inverter inv(bms):();
+    BMS bms(controller):();
+    ACLoad acLoad(inv):();
+}

@@ -1,0 +1,9 @@
+property {
+	define{
+		LowSOC = (bms.soc == BMS_SOC_CRITICAL_LOW);
+	}
+
+    Assertion {
+        noLowSOC: !LowSOC;
+    }
+}
