@@ -27,6 +27,16 @@ env int INVERTER_AC_LOAD_HIGH = 3;
 
 env int AC_LOAD_CONTROL_LOOP_PERIOD = 1;
 
+/*
+	Assumptions for the correctness of this module:
+	1) The control loop period of the fuel cell is the same as the BMS. This assumption can be tested by 
+	increasing the control loop period of the fuel cell, while the the control loop of the BMS and the inverter
+	stays the same. 
+	
+	
+*/
+
+
 reactiveclass EnergyController(10) {
     knownrebecs {
         FuelCell fuelCell;
@@ -94,25 +104,32 @@ reactiveclass FuelCell(10) {
 
     statevars {
         int productionRate;
+        int requestedProductionRate;
     }
 
     FuelCell() {
         productionRate = FC_PR_INACTIVE;
+        requestedProductionRate = FC_PR_INACTIVE;
         self.controlLoop();
     }
 
     msgsrv controlLoop() {
+    	adjustProductionRate();
         inv.setPVPower(productionRate);
         self.controlLoop() after(FC_CONTROL_LOOP_PERIOD);
     }
 
     msgsrv requestProductionRate(int newProductionRate) {
-        if (newProductionRate < FC_PR_INACTIVE) {
+    	requestedProductionRate = newProductionRate;
+    }
+    
+    void adjustProductionRate() {
+    	if (requestedProductionRate < FC_PR_INACTIVE) {
             productionRate = FC_PR_INACTIVE;
-        } else if (newProductionRate > FC_PR_HIGH) {
+        } else if (requestedProductionRate > FC_PR_HIGH) {
             productionRate = FC_PR_HIGH;
         } else {
-            productionRate = newProductionRate;
+            productionRate = requestedProductionRate;
         }
     }
 }
@@ -128,7 +145,7 @@ reactiveclass BMS(10) {
     }
 
     BMS() {
-        soc = BMS_SOC_MEDIUM; /* For now fixed, make random */
+        soc = BMS_SOC_HIGH; /* For now fixed, make random */
         operationLevel = BMS_OP_LEVEL_INACTIVE;
         self.controlLoop();
     }
@@ -139,7 +156,7 @@ reactiveclass BMS(10) {
         self.controlLoop() after(BMS_CONTROL_LOOP_PERIOD);
     }
 
-    msgsrv requestOperation(int newOperationLevel) {
+    msgsrv setOperation(int newOperationLevel) {
         if (newOperationLevel > BMS_OP_LEVEL_INACTIVE) {
             operationLevel = BMS_CHARGE;
         } else if (newOperationLevel < BMS_OP_LEVEL_INACTIVE) {
@@ -160,10 +177,10 @@ reactiveclass BMS(10) {
             /* Intentionally left blank */
         }
 
-        if (newSOC > BMS_SOC_HIGH) {
-            soc = BMS_SOC_HIGH;
-        } else if (newSOC < BMS_SOC_LOW) {
-            soc = BMS_SOC_LOW;
+        if (newSOC > BMS_SOC_FULL) {
+            soc = BMS_SOC_FULL;
+        } else if (newSOC < BMS_SOC_EMPTY) {
+            soc = BMS_SOC_EMPTY;
         } else {
             soc = newSOC;
         }
@@ -181,14 +198,14 @@ reactiveclass Inverter(10) {
     }
 
     Inverter() {
-        acLoad = INVERTER_AC_LOAD_LOW; /* Static load for now */
+        acLoad = INVERTER_AC_LOAD_INACTIVE;
         pvPower = FC_PR_INACTIVE;
         self.controlLoop();
     }
 
     msgsrv controlLoop() {
         int batteryRequest = pvPower - acLoad;
-        bms.requestOperation(batteryRequest);
+        bms.setOperation(batteryRequest);
         self.controlLoop() after(INVERTER_CONTROL_LOOP_PERIOD);
     }
 
@@ -221,7 +238,7 @@ reactiveclass ACLoad(10) {
 		   1 = INVERTER_AC_LOAD_LOW
 		   2 = INVERTER_AC_LOAD_MEDIUM
            3 = INVERTER_AC_LOAD_HIGH */
-        acLoad = acLoad = ?(0, 1, 2, 3);
+        acLoad = ?(0, 1, 2, 3);
         
         inv.setACLoad(acLoad);
         self.controlLoop() after(AC_LOAD_CONTROL_LOOP_PERIOD);
