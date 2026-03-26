@@ -9,15 +9,20 @@ env int FC_PR_HIGH = 3;
 env int BMS_CONTROL_LOOP_PERIOD = 1;
 env int BMS_SOC_UNKNOWN = -1;
 env int BMS_SOC_EMPTY = 0;
-env int BMS_SOC_CRITICAL_LOW = 1;
-env int BMS_SOC_LOW = 3;
-env int BMS_SOC_MEDIUM = 5;
-env int BMS_SOC_HIGH = 8;
-env int BMS_SOC_FULL = 10;
+env int BMS_SOC_CRITICAL_LOW = 10;
+env int BMS_SOC_LOW = 30;
+env int BMS_SOC_MEDIUM = 50;
+env int BMS_SOC_HIGH = 70;
+env int BMS_SOC_CRITICAL_HIGH = 90;
+env int BMS_SOC_FULL = 100;
 
-env int BMS_CHARGE = 1;
-env int BMS_OP_LEVEL_INACTIVE = 0;
-env int BMS_DISCHARGE = -1;
+env int BMS_POWER_CHARGE_HIGH = 3;
+env int BMS_POWER_CHARGE_MEDIUM = 2;
+env int BMS_POWER_CHARGE_LOW = 1;
+env int BMS_POWER_INACTIVE = 0;
+env int BMS_POWER_DISCHARGE_LOW = -1;
+env int BMS_POWER_DISCHARGE_MEDIUM = -2;
+env int BMS_POWER_DISCHARGE_HIGH = -3;
 
 env int INVERTER_CONTROL_LOOP_PERIOD = 1;
 env int INVERTER_AC_LOAD_INACTIVE = 0;
@@ -33,7 +38,12 @@ env int AC_LOAD_CONTROL_LOOP_PERIOD = 1;
 	increasing the control loop period of the fuel cell, while the the control loop of the BMS and the inverter
 	stays the same. 
 	
+	2) As an assumption and abstraction power and soc are being treated as if they had compatible units
+	the control-loop duration is implicitly baked into the update changing loop periods changes the 
+	physical meaning of the model. This might be fine for abstraction, but this is not true physical 
+	energy conservation.
 	
+	3) Battery has not current limit, no ramping limit and no efficiency losses.
 */
 
 
@@ -89,8 +99,11 @@ reactiveclass EnergyController(10) {
 		    requestedProductionRate = FC_PR_HIGH;
 		} else if (observedSOC < BMS_SOC_HIGH) {
 		    requestedProductionRate = FC_PR_MEDIUM;
-		} else {
-		    requestedProductionRate = FC_PR_LOW;
+		} else if (observedSOC == BMS_SOC_CRITICAL_HIGH) {
+			requestedProductionRate = FC_PR_LOW;
+		}
+		else {
+		    requestedProductionRate = FC_PR_INACTIVE;
 		}
 
         fuelCell.requestProductionRate(requestedProductionRate);
@@ -141,12 +154,12 @@ reactiveclass BMS(10) {
 
     statevars {
         int soc;
-        int operationLevel;
+        int power;
     }
 
     BMS() {
         soc = BMS_SOC_HIGH; /* For now fixed, make random */
-        operationLevel = BMS_OP_LEVEL_INACTIVE;
+        power = BMS_POWER_INACTIVE;
         self.controlLoop();
     }
 
@@ -156,27 +169,18 @@ reactiveclass BMS(10) {
         self.controlLoop() after(BMS_CONTROL_LOOP_PERIOD);
     }
 
-    msgsrv setOperation(int newOperationLevel) {
-        if (newOperationLevel > BMS_OP_LEVEL_INACTIVE) {
-            operationLevel = BMS_CHARGE;
-        } else if (newOperationLevel < BMS_OP_LEVEL_INACTIVE) {
-            operationLevel = BMS_DISCHARGE;
-        } else {
-            operationLevel = BMS_OP_LEVEL_INACTIVE;
-        }
+    msgsrv setBatteryPower(int newPower) {
+    	if (newPower < BMS_POWER_DISCHARGE_HIGH) {
+    		power = BMS_POWER_DISCHARGE_HIGH;
+    	} else if (newPower > BMS_POWER_CHARGE_HIGH) {
+    		power = BMS_POWER_CHARGE_HIGH;
+    	} else {
+ 	       power = newPower;
+ 	    }
     }
 
     void calculateSOC() {
-        int newSOC = soc;
-
-        if (operationLevel == BMS_CHARGE) {
-            newSOC = soc + 1;
-        } else if (operationLevel == BMS_DISCHARGE) {
-            newSOC = soc - 1;
-        } else {
-            /* Intentionally left blank */
-        }
-
+        int newSOC = soc + power;
         if (newSOC > BMS_SOC_FULL) {
             soc = BMS_SOC_FULL;
         } else if (newSOC < BMS_SOC_EMPTY) {
@@ -204,8 +208,8 @@ reactiveclass Inverter(10) {
     }
 
     msgsrv controlLoop() {
-        int batteryRequest = pvPower - acLoad;
-        bms.setOperation(batteryRequest);
+        int batteryPower = pvPower - acLoad;
+        bms.setBatteryPower(batteryPower);
         self.controlLoop() after(INVERTER_CONTROL_LOOP_PERIOD);
     }
 
