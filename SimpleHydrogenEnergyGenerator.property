@@ -1,7 +1,7 @@
 property {
 	define{
-		LowSOC = (bms.soc == BMS_SOC_CRITICAL_LOW);
-		HighSOC = (bms.soc == BMS_SOC_FULL);
+		LowSOC = (bms.soc <= BMS_SOC_CRITICAL_LOW);
+		HighSOC = (bms.soc >= BMS_SOC_CRITICAL_HIGH);
 	}
 
     Assertion {
