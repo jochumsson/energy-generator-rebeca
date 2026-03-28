@@ -1,72 +1,53 @@
 /* Energy controller control loop period */
 env int EC_CONTROL_LOOP_PERIOD = 2;
 
-/* Fuel cell control loop and production levels */
-env int FC_CONTROL_LOOP_PERIOD = 1;
-env int FC_PR_INACTIVE = 0;
-env int FC_PR_LOW = 1;
-env int FC_PR_MEDIUM = 2;
-env int FC_PR_HIGH = 3;
+/* Fuel cell power levels */
+env int FC_PR_POWER_INACTIVE = 0;
+env int FC_PR_POWER_LOW = 1;
+env int FC_PR_POWER_MEDIUM_LOW = 2;
+env int FC_PR_POWER_MEDIUM = 3;
+env int FC_PR_POWER_MEDIUM_HIGH = 4;
+env int FC_PR_POWER_HIGH = 5;
 
 /* Battery management system (BMS) control loop and SOC levels */
 env int BMS_CONTROL_LOOP_PERIOD = 1;
 env int BMS_SOC_UNKNOWN = -1;
 env int BMS_SOC_EMPTY = 0;
-env int BMS_SOC_CRITICAL_LOW = 10;
-env int BMS_SOC_LOW = 30;
-env int BMS_SOC_MEDIUM = 50;
-env int BMS_SOC_HIGH = 70;
-env int BMS_SOC_CRITICAL_HIGH = 90;
-env int BMS_SOC_FULL = 100;
+env int BMS_SOC_CRITICAL_LOW = 1;
+env int BMS_SOC_LOW = 3;
+env int BMS_SOC_MEDIUM = 5;
+env int BMS_SOC_HIGH = 7;
+env int BMS_SOC_CRITICAL_HIGH = 9;
+env int BMS_SOC_FULL = 10;
+env int BMS_SOC_FRACTION_MAX = 120;  /* Number of fractional steps required to change SOC by one unit */
 
 /* BMS power levels for charging and discharging */
-env int BMS_POWER_CHARGE_HIGH = 3;
-env int BMS_POWER_CHARGE_MEDIUM = 2;
-env int BMS_POWER_CHARGE_LOW = 1;
-env int BMS_POWER_INACTIVE = 0;
-env int BMS_POWER_DISCHARGE_LOW = -1;
-env int BMS_POWER_DISCHARGE_MEDIUM = -2;
-env int BMS_POWER_DISCHARGE_HIGH = -3;
+env int BMS_CHARGE_POWER_HIGH = 5;
+env int BMS_CHARGE_POWER_MEDIUM_HIGH = 4;
+env int BMS_CHARGE_POWER_MEDIUM = 3;
+env int BMS_CHARGE_POWER_MEDIUM_LOW = 2;
+env int BMS_CHARGE_POWER_LOW = 1;
+env int BMS_INACTIVE_POWER = 0;
+env int BMS_DISCHARGE_POWER_LOW = -1;
+env int BMS_DISCHARGE_POWER_MEDIUM_LOW = -2;
+env int BMS_DISCHARGE_POWER_MEDIUM = -3;
+env int BMS_DISCHARGE_POWER_MEDIUM_HIGH = -4;
+env int BMS_DISCHARGE_POWER_HIGH = -5;
 
-/* Inverter control loop and AC load levels */
-env int INVERTER_CONTROL_LOOP_PERIOD = 1;
-env int INVERTER_AC_LOAD_INACTIVE = 0;
-env int INVERTER_AC_LOAD_LOW = 1;
-env int INVERTER_AC_LOAD_MEDIUM = 2;
-env int INVERTER_AC_LOAD_HIGH = 3;
+/* Inverter AC load power levels */
+env int INVERTER_AC_LOAD_POWER_INACTIVE = 0;
+env int INVERTER_AC_LOAD_POWER_LOW = 1;
+env int INVERTER_AC_LOAD_POWER_MEDIUM_LOW = 2;
+env int INVERTER_AC_LOAD_POWER_MEDIUM = 3;
+env int INVERTER_AC_LOAD_POWER_MEDIUM_HIGH = 4;
+env int INVERTER_AC_LOAD_POWER_HIGH = 5;
 
 /* AC load simulation control loop period */
-env int AC_LOAD_CONTROL_LOOP_PERIOD = 5;
+env int AC_LOAD_CONTROL_LOOP_PERIOD = 1;
 
-/*
-    Assumptions for the correctness of this module:
-    1) The control loop period of the fuel cell is the same as the BMS. This assumption can be tested by 
-    increasing the control loop period of the fuel cell, while the control loop of the BMS and the inverter
-    stays the same. 
-    
-    2) As an assumption and abstraction, power and SOC are treated as if they have compatible units.
-    The control loop duration is implicitly baked into the update, meaning that changing loop periods
-    changes the physical meaning of the model. This might be fine for abstraction, but it does not represent
-    true physical energy conservation. 
-    For example, the abstraction could realistically represent a smaller energy generator supporting:
-     - max AC load of 3 kW
-     - production of 3 kW 
-     - 100 kWh battery capacity. 
-    
-    3) The battery has no current limit, no ramping limit, and no efficiency losses.
-    
-    4) How the fuel cell is operated: is it possible to optimize its execution with respect to the load?
-       For example, the assertion:
-       noHighProduction: !HighProduction;
-       where HighProduction = (fuelCell.productionRate == FC_PR_HIGH);
-       is invalid unless we relax the AC load definition to acLoad = ?(0, 1, 2);
-       This leads to the realization that high production is only required during peak AC load,
-       which might be an acceptable approach, or not. 
-*/
 
-/* Supervisory controller regulating energy production
-*/
-reactiveclass EnergyController(10) {
+/* Supervisory controller regulating energy production */
+reactiveclass ControlSystem(10) {
     knownrebecs {
         FuelCell fuelCell;
     }
@@ -76,7 +57,7 @@ reactiveclass EnergyController(10) {
         int batteryStateOfCharge;
     }
 
-    EnergyController() {
+    ControlSystem() {
         batteryStateOfCharge = BMS_SOC_UNKNOWN;
         self.controlLoop();
     }
@@ -87,20 +68,22 @@ reactiveclass EnergyController(10) {
     }
 
     /*
-     State of charge is received over a communication bus (e.g. CAN) from the 
+     State of charge is received over a communication bus (e.g. CAN) from the
      battery management system (BMS). This communication is characterized by high
-     frequency and is often associated with a dedicated bus for reliability reasons. 
+     frequency and is often associated with a dedicated bus for reliability reasons.
     */
     msgsrv receiveStateOfCharge(int soc) {
         batteryStateOfCharge = soc;
     }
 
-    /* Regulate the production rate of the fuel cell with respect to the battery SOC level:
-       Fuel cell production rates:
-        - FC_PR_INACTIVE
-        - FC_PR_LOW
-        - FC_PR_MEDIUM
-        - FC_PR_HIGH 
+    /* Regulate fuel cell power with respect to the battery SOC level:
+       Fuel cell power levels:
+        - FC_PR_POWER_INACTIVE
+        - FC_PR_POWER_LOW
+        - FC_PR_POWER_MEDIUM_LOW
+        - FC_PR_POWER_MEDIUM
+        - FC_PR_POWER_MEDIUM_HIGH
+        - FC_PR_POWER_HIGH
            
        Battery SOC levels:
         - BMS_SOC_UNKNOWN
@@ -110,86 +93,79 @@ reactiveclass EnergyController(10) {
         - BMS_SOC_MEDIUM
         - BMS_SOC_HIGH
         - BMS_SOC_CRITICAL_HIGH
-        - BMS_SOC_FULL           
+        - BMS_SOC_FULL
     */
     void regulateProduction() {
-        int requestedProductionRate;
+        int fuelCellPower;
+
         if (batteryStateOfCharge == BMS_SOC_UNKNOWN) {
-            requestedProductionRate = FC_PR_INACTIVE;
+            fuelCellPower = FC_PR_POWER_INACTIVE;
+        } else if (batteryStateOfCharge <= BMS_SOC_CRITICAL_LOW) {
+            fuelCellPower = FC_PR_POWER_HIGH;
         } else if (batteryStateOfCharge <= BMS_SOC_LOW) {
-            requestedProductionRate = FC_PR_HIGH;
+            fuelCellPower = FC_PR_POWER_HIGH;
         } else if (batteryStateOfCharge <= BMS_SOC_MEDIUM) {
-            requestedProductionRate = FC_PR_HIGH;
-        } else if (batteryStateOfCharge < BMS_SOC_HIGH) {
-            requestedProductionRate = FC_PR_MEDIUM;
-        } else if (batteryStateOfCharge == BMS_SOC_CRITICAL_HIGH) {
-            requestedProductionRate = FC_PR_LOW;
-        }
-        else {
-            requestedProductionRate = FC_PR_INACTIVE;
+            fuelCellPower = FC_PR_POWER_MEDIUM_HIGH;
+        } else if (batteryStateOfCharge <= BMS_SOC_HIGH) {
+            fuelCellPower = FC_PR_POWER_LOW;
+        } else if (batteryStateOfCharge <= BMS_SOC_CRITICAL_HIGH) {
+            fuelCellPower = FC_PR_POWER_INACTIVE;
+        } else {
+            fuelCellPower = FC_PR_POWER_INACTIVE;
         }
 
-        fuelCell.requestProductionRate(requestedProductionRate);
+        fuelCell.control(fuelCellPower);
     }
 }
 
-/* Fuel cell model with externally requested production rate */
+/* Fuel cell model with externally requested power */
 reactiveclass FuelCell(10) {
     knownrebecs {
         Inverter inv;
     }
 
     statevars {
-        int currentProductionRate;
-        int requestedProductionRate;
+        int productionRatePower;
     }
 
     FuelCell() {
-        currentProductionRate = FC_PR_INACTIVE;
-        requestedProductionRate = FC_PR_INACTIVE;
-        self.controlLoop();
+        productionRatePower = FC_PR_POWER_INACTIVE;
     }
 
-    msgsrv controlLoop() {
-        updateProductionRate();
-        self.controlLoop() after(FC_CONTROL_LOOP_PERIOD);
-    }
-
-    /*! The fuel cell production rate is requested by an external control unit */
-    msgsrv requestProductionRate(int productionRate) {
-        requestedProductionRate = productionRate;
-    }
-    
-    /*! Updates the current production rate with respect to the last requested production rate. 
-        As of now, the function does not simulate realistic fuel cell behavior such as ramp-up
-        and ramp-down, and naively assumes the requested rate is applied instantly.
-    */
-    void updateProductionRate() {
-        if (requestedProductionRate < FC_PR_INACTIVE) {
-            currentProductionRate = FC_PR_INACTIVE;
-        } else if (requestedProductionRate > FC_PR_HIGH) {
-            currentProductionRate = FC_PR_HIGH;
+    /*! The fuel cell power is requested by an external control unit */
+    msgsrv control(int power) {
+        /*! Updates the current production power with respect to the last requested power.
+            As of now, the function does not simulate realistic fuel cell behavior such as ramp-up
+            and ramp-down, and naively assumes the requested power is applied instantly.
+        */
+        if (power < FC_PR_POWER_INACTIVE) {
+            productionRatePower = FC_PR_POWER_INACTIVE;
+        } else if (power > FC_PR_POWER_HIGH) {
+            productionRatePower = FC_PR_POWER_HIGH;
         } else {
-            currentProductionRate = requestedProductionRate;
+            productionRatePower = power;
         }
-        inv.setPVPower(currentProductionRate);
+
+        inv.supplyPvPower(productionRatePower);
     }
 }
 
 /*! Battery management system (BMS) handling power flow and SOC */
 reactiveclass BMS(10) {
     knownrebecs {
-        EnergyController controller;
+        ControlSystem controller;
     }
 
     statevars {
         int stateOfCharge;
-        int power;
+        int socFraction;
+        int currentPower;
     }
 
     BMS() {
-        stateOfCharge = BMS_SOC_LOW; /* For now fixed, make random */
-        power = BMS_POWER_INACTIVE;
+        stateOfCharge = BMS_SOC_MEDIUM; /* For now fixed, make random */
+        socFraction = 0;
+        currentPower = BMS_INACTIVE_POWER;
         self.controlLoop();
     }
 
@@ -199,31 +175,44 @@ reactiveclass BMS(10) {
         self.controlLoop() after(BMS_CONTROL_LOOP_PERIOD);
     }
 
-    /*! The battery power is introduced from external entities drawing on or supplying  
+    /*! The battery power is driven from external entities drawing on or supplying
         power to the battery. The BMS senses this through high-frequency measurements.
      */
-    msgsrv setBatteryPower(int newPower) {
-        if (newPower < BMS_POWER_DISCHARGE_HIGH) {
-            power = BMS_POWER_DISCHARGE_HIGH;
-        } else if (newPower > BMS_POWER_CHARGE_HIGH) {
-            power = BMS_POWER_CHARGE_HIGH;
+    msgsrv drivePower(int power) {
+        if (power < BMS_DISCHARGE_POWER_HIGH) {
+            currentPower = BMS_DISCHARGE_POWER_HIGH;
+        } else if (power > BMS_CHARGE_POWER_HIGH) {
+            currentPower = BMS_CHARGE_POWER_HIGH;
         } else {
-            power = newPower;
+            currentPower = power;
         }
     }
 
-    /*! Simulates increase or decrease of state of charge with respect to current 
+    /*! Simulates increase or decrease of state of charge with respect to current
         charging or discharging power. This model does not simulate realistic battery
         behavior such as resistance, wear-out, or random hardware faults.
     */
     void calculateStateOfCharge() {
-        int newSOC = stateOfCharge + power;
-        if (newSOC > BMS_SOC_FULL) {
-            stateOfCharge = BMS_SOC_FULL;
-        } else if (newSOC < BMS_SOC_EMPTY) {
-            stateOfCharge = BMS_SOC_EMPTY;
+        int newFraction = socFraction + currentPower;
+
+        if (newFraction >= BMS_SOC_FRACTION_MAX) {
+            socFraction = newFraction - BMS_SOC_FRACTION_MAX;
+            stateOfCharge = stateOfCharge + 1;
+        } else if (newFraction < 0) {
+            socFraction = newFraction + BMS_SOC_FRACTION_MAX;
+            stateOfCharge = stateOfCharge - 1;
         } else {
-            stateOfCharge = newSOC;
+            socFraction = newFraction;
+        }
+
+        if (stateOfCharge > BMS_SOC_FULL) {
+            stateOfCharge = BMS_SOC_FULL;
+            socFraction = 0;
+        } else if (stateOfCharge < BMS_SOC_EMPTY) {
+            stateOfCharge = BMS_SOC_EMPTY;
+            socFraction = 0;
+        } else {
+            /* intentionally left blank */
         }
     }
     
@@ -240,70 +229,72 @@ reactiveclass Inverter(10) {
     }
 
     statevars {
-        int acLoad;
+        int acLoadPower;
         int pvPower;
     }
 
     Inverter() {
-        acLoad = INVERTER_AC_LOAD_INACTIVE;
-        pvPower = FC_PR_INACTIVE;
-        self.controlLoop();
+        acLoadPower = INVERTER_AC_LOAD_POWER_INACTIVE;
+        pvPower = FC_PR_POWER_INACTIVE;
     }
 
-    msgsrv controlLoop() {
-        int batteryPower = pvPower - acLoad;
-        bms.setBatteryPower(batteryPower);
-        self.controlLoop() after(INVERTER_CONTROL_LOOP_PERIOD);
-    }
-    
-    /*! The AC load is introduced from external entities drawing AC power 
+    /*! The AC load is introduced from external entities drawing AC power
         from the inverter. The inverter senses this through high-frequency measurements.
      */
-    msgsrv setACLoad(int load) {
-        acLoad = load;
+    msgsrv loadAcPower(int power) {
+        acLoadPower = power;
+        driveBatteryPower();
     }
     
     /*! The PV power is introduced from external entities (e.g. PV or fuel cell)
         supplying DC power to the inverter. The inverter senses this through high-frequency measurements.
     */
-    msgsrv setPVPower(int power) {
+    msgsrv supplyPvPower(int power) {
         pvPower = power;
+        driveBatteryPower();
+    }
+    
+    /*! Update the battery power with respect to the AC load and current PV input power */
+    void driveBatteryPower() {
+        int batteryPower = pvPower - acLoadPower;
+        bms.drivePower(batteryPower);
     }
 }
 
 /*! Simulates AC load from external entities connected to the inverter */
-reactiveclass ACLoad(10) {
+reactiveclass BackupGrid(10) {
     knownrebecs {
         Inverter inv;
     }
 
     statevars {
-        int acLoad;
+        int acLoadPower;
     }
 
-    ACLoad() {
-        acLoad = INVERTER_AC_LOAD_INACTIVE;
+    BackupGrid() {
+        acLoadPower = INVERTER_AC_LOAD_POWER_INACTIVE;
         self.controlLoop();
     }
 
     msgsrv controlLoop() {
         /* Generate random load:
-           0 = INVERTER_AC_LOAD_INACTIVE
-           1 = INVERTER_AC_LOAD_LOW
-           2 = INVERTER_AC_LOAD_MEDIUM
-           3 = INVERTER_AC_LOAD_HIGH */
-        acLoad = ?(0, 1, 2, 3);
+           0 = INVERTER_AC_LOAD_POWER_INACTIVE
+           1 = INVERTER_AC_LOAD_POWER_LOW
+           2 = INVERTER_AC_LOAD_POWER_MEDIUM_LOW
+           3 = INVERTER_AC_LOAD_POWER_MEDIUM
+           4 = INVERTER_AC_LOAD_POWER_MEDIUM_HIGH
+           5 = INVERTER_AC_LOAD_POWER_HIGH */
+        acLoadPower = ?(0, 1, 2, 3, 4, 5);
         
-        inv.setACLoad(acLoad);
+        inv.loadAcPower(acLoadPower);
         self.controlLoop() after(AC_LOAD_CONTROL_LOOP_PERIOD);
     }
 }
 
-
 main {
-    EnergyController controller(fuelCell):();
+    ControlSystem controller(fuelCell):();
     FuelCell fuelCell(inv):();
     Inverter inv(bms):();
     BMS bms(controller):();
-    ACLoad acLoad(inv):();
+    BackupGrid backupGrid(inv):();
 }

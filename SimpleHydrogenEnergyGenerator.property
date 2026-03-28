@@ -2,7 +2,7 @@ property {
 	define{
 		LowSOC = (bms.stateOfCharge <= BMS_SOC_CRITICAL_LOW);
 		HighSOC = (bms.stateOfCharge >= BMS_SOC_CRITICAL_HIGH);
-		HighProduction = (fuelCell.currentProductionRate == FC_PR_HIGH);
+		HighProduction = (fuelCell.productionRatePower == FC_PR_POWER_HIGH);
 	}
 
     Assertion {
