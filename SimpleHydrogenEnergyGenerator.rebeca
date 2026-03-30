@@ -1,5 +1,5 @@
 /* Energy controller control loop period */
-env int EC_CONTROL_LOOP_PERIOD = 2;
+env int EC_CONTROL_LOOP_PERIOD = 1;
 
 /* Fuel cell power levels */
 env int FC_PR_POWER_INACTIVE = 0;
@@ -8,6 +8,19 @@ env int FC_PR_POWER_MEDIUM_LOW = 2;
 env int FC_PR_POWER_MEDIUM = 3;
 env int FC_PR_POWER_MEDIUM_HIGH = 4;
 env int FC_PR_POWER_HIGH = 5;
+
+
+/* BMS_SOC_ENERGY_FRACTION represents the relative dependency between power, energy, and time. 
+   This by representing how many control cycles of the system power unit gives 10 percent SOC.
+   For example:
+    - a fuel cell capacity of 100 kW, where one system\_power unit corresponds to 20 kW,
+    - a battery capacity of 100 kWh, where one soc\_energy unit corresponds to 10 kWh,
+    - cyclic control interval of 30 seconds.
+   Representing this scenario, the model is calibrated by assigning BMS_SOC_ENERGY_FRACTION to 60, 
+   since one BMS_SOC energy unit (10% SOC = 10kWh) corresponds to 60 control cycles (30 sec cycles)
+   at one system POWER unit (20kW).
+*/
+env int BMS_SOC_ENERGY_CYCLES = 60; 
 
 /* Battery management system (BMS) control loop and SOC levels */
 env int BMS_CONTROL_LOOP_PERIOD = 1;
@@ -19,7 +32,6 @@ env int BMS_SOC_MEDIUM = 5;
 env int BMS_SOC_HIGH = 7;
 env int BMS_SOC_CRITICAL_HIGH = 9;
 env int BMS_SOC_FULL = 10;
-env int BMS_SOC_FRACTION_MAX = 120;  /* Number of fractional steps required to change SOC by one unit */
 
 /* BMS power levels for charging and discharging */
 env int BMS_CHARGE_POWER_HIGH = 5;
@@ -53,8 +65,9 @@ reactiveclass ControlSystem(10) {
     }
 
     statevars {
-        /*! Last received battery state of charge (SOC) */
+        /*! Last received battery info */
         int batteryStateOfCharge;
+        int batteryPower;
     }
 
     ControlSystem() {
@@ -72,8 +85,9 @@ reactiveclass ControlSystem(10) {
      battery management system (BMS). This communication is characterized by high
      frequency and is often associated with a dedicated bus for reliability reasons.
     */
-    msgsrv receiveStateOfCharge(int soc) {
+    msgsrv receiveBatteryInfo(int soc, int power) {
         batteryStateOfCharge = soc;
+        batteryPower = power;
     }
 
     /* Regulate fuel cell power with respect to the battery SOC level:
@@ -94,20 +108,48 @@ reactiveclass ControlSystem(10) {
         - BMS_SOC_HIGH
         - BMS_SOC_CRITICAL_HIGH
         - BMS_SOC_FULL
+        
+       env int BMS_CHARGE_POWER_HIGH = 5;
+		- BMS_CHARGE_POWER_MEDIUM_HIGH = 4;
+		- BMS_CHARGE_POWER_MEDIUM = 3;
+		- BMS_CHARGE_POWER_MEDIUM_LOW = 2;
+		- BMS_CHARGE_POWER_LOW = 1;
+		- BMS_INACTIVE_POWER = 0;
+		- BMS_DISCHARGE_POWER_LOW = -1;
+		- BMS_DISCHARGE_POWER_MEDIUM_LOW = -2;
+		- BMS_DISCHARGE_POWER_MEDIUM = -3;
+		- BMS_DISCHARGE_POWER_MEDIUM_HIGH = -4;
+		- BMS_DISCHARGE_POWER_HIGH = -5;
     */
     void regulateProduction() {
-        int fuelCellPower;
-
+        int fuelCellPower = FC_PR_POWER_INACTIVE;
         if (batteryStateOfCharge == BMS_SOC_UNKNOWN) {
             fuelCellPower = FC_PR_POWER_INACTIVE;
         } else if (batteryStateOfCharge <= BMS_SOC_CRITICAL_LOW) {
+        	if (batteryPower > BMS_INACTIVE_POWER) {
+        		fuelCellPower = FC_PR_POWER_MEDIUM_HIGH;
+        	} else {
+            	fuelCellPower = FC_PR_POWER_HIGH;
+            }
             fuelCellPower = FC_PR_POWER_HIGH;
         } else if (batteryStateOfCharge <= BMS_SOC_LOW) {
-            fuelCellPower = FC_PR_POWER_HIGH;
+        	if (batteryPower > BMS_INACTIVE_POWER) {
+        		fuelCellPower = FC_PR_POWER_MEDIUM;
+        	} else {
+            	fuelCellPower = FC_PR_POWER_MEDIUM_HIGH;
+            }
         } else if (batteryStateOfCharge <= BMS_SOC_MEDIUM) {
-            fuelCellPower = FC_PR_POWER_MEDIUM_HIGH;
+        	if (batteryPower > BMS_INACTIVE_POWER) {
+	            fuelCellPower = FC_PR_POWER_MEDIUM_LOW;
+        	} else {
+            	fuelCellPower = FC_PR_POWER_MEDIUM;
+            }
         } else if (batteryStateOfCharge <= BMS_SOC_HIGH) {
-            fuelCellPower = FC_PR_POWER_LOW;
+        	if (batteryPower > BMS_INACTIVE_POWER) {
+	            fuelCellPower = FC_PR_POWER_LOW;
+        	} else {
+            	fuelCellPower = FC_PR_POWER_MEDIUM_LOW;
+            }        
         } else if (batteryStateOfCharge <= BMS_SOC_CRITICAL_HIGH) {
             fuelCellPower = FC_PR_POWER_INACTIVE;
         } else {
@@ -126,6 +168,8 @@ reactiveclass FuelCell(10) {
 
     statevars {
         int productionRatePower;
+        int currentProductionRateTime;
+        int ramping;
     }
 
     FuelCell() {
@@ -138,14 +182,33 @@ reactiveclass FuelCell(10) {
             As of now, the function does not simulate realistic fuel cell behavior such as ramp-up
             and ramp-down, and naively assumes the requested power is applied instantly.
         */
+    	int newProductionRatePower = power;
         if (power < FC_PR_POWER_INACTIVE) {
-            productionRatePower = FC_PR_POWER_INACTIVE;
+            newProductionRatePower = FC_PR_POWER_INACTIVE;
         } else if (power > FC_PR_POWER_HIGH) {
-            productionRatePower = FC_PR_POWER_HIGH;
+            newProductionRatePower = FC_PR_POWER_HIGH;
         } else {
-            productionRatePower = power;
+            /* Intentionally left blank */
         }
-
+		
+		if (productionRatePower == FC_PR_POWER_INACTIVE &&
+			newProductionRatePower != FC_PR_POWER_INACTIVE) {
+			ramping = 1;
+		}
+		
+		if (newProductionRatePower == productionRatePower) {
+			if (productionRatePower == FC_PR_POWER_INACTIVE) {
+				if (currentProductionRateTime < 60) {
+					++currentProductionRateTime;
+				}
+			} else {
+				currentProductionRateTime = 0;
+			}
+		} else {
+			productionRatePower = newProductionRatePower;
+			currentProductionRateTime = 0;
+		}
+		
         inv.supplyPvPower(productionRatePower);
     }
 }
@@ -171,7 +234,7 @@ reactiveclass BMS(10) {
 
     msgsrv controlLoop() {
         calculateStateOfCharge();
-        broadcastStateOfCharge();
+        broadcastBatteryState();
         self.controlLoop() after(BMS_CONTROL_LOOP_PERIOD);
     }
 
@@ -195,11 +258,11 @@ reactiveclass BMS(10) {
     void calculateStateOfCharge() {
         int newFraction = socFraction + currentPower;
 
-        if (newFraction >= BMS_SOC_FRACTION_MAX) {
-            socFraction = newFraction - BMS_SOC_FRACTION_MAX;
+        if (newFraction >= BMS_SOC_ENERGY_CYCLES) {
+            socFraction = newFraction - BMS_SOC_ENERGY_CYCLES;
             stateOfCharge = stateOfCharge + 1;
         } else if (newFraction < 0) {
-            socFraction = newFraction + BMS_SOC_FRACTION_MAX;
+            socFraction = newFraction + BMS_SOC_ENERGY_CYCLES;
             stateOfCharge = stateOfCharge - 1;
         } else {
             socFraction = newFraction;
@@ -217,8 +280,8 @@ reactiveclass BMS(10) {
     }
     
     /*! Simulates broadcasting of BMS information over a communication bus (e.g. CAN). */
-    void broadcastStateOfCharge() {
-        controller.receiveStateOfCharge(stateOfCharge);
+    void broadcastBatteryState() {
+        controller.receiveBatteryInfo(stateOfCharge, currentPower);
     }
 }
 

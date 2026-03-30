@@ -3,11 +3,13 @@ property {
 		LowSOC = (bms.stateOfCharge <= BMS_SOC_CRITICAL_LOW);
 		HighSOC = (bms.stateOfCharge >= BMS_SOC_CRITICAL_HIGH);
 		HighProduction = (fuelCell.productionRatePower == FC_PR_POWER_HIGH);
+		Ramping = (fuelCell.ramping == 1);
 	}
 
     Assertion {
         noLowSOC: !LowSOC;
         noHighSOC: !HighSOC;
         /* noHighProduction: !HighProduction; */
+        /* noRamping: !Ramping; */
     }
 }
